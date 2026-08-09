@@ -1,0 +1,16 @@
+services:
+  tpad:
+    build: .
+    image: tpad:latest
+    container_name: tpad
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      TPAD_DATA_DIR: "/data"
+    volumes:
+      - tpad-data:/data
+
+volumes:
+  tpad-data:

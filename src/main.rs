@@ -35,15 +35,6 @@ impl PadData {
     }
 }
 
-fn gen_id() -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_";
-    let mut buf = [0u8; 10];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        let _ = f.read_exact(&mut buf);
-    }
-    buf.iter().map(|b| ALPHABET[(*b as usize) % 63] as char).collect()
-}
-
 static INDEX_HTML: &str = include_str!("index.html");
 
 struct AppState {
@@ -54,11 +45,29 @@ impl AppState {
     fn new(data_dir: &str) -> Self {
         let path = PathBuf::from(data_dir);
         std::fs::create_dir_all(&path).expect("failed to create data directory");
+        // migrate legacy extensionless pads to <id>.txt
+        if let Ok(entries) = std::fs::read_dir(&path) {
+            for e in entries.flatten() {
+                let ft = match e.file_type() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                if !ft.is_file() {
+                    continue;
+                }
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.ends_with(".txt") || !is_valid_id(&name) {
+                    continue;
+                }
+                let to = path.join(format!("{name}.txt"));
+                let _ = std::fs::rename(e.path(), &to);
+            }
+        }
         AppState { data_dir: path }
     }
 
     fn pad_path(&self, id: &str) -> PathBuf {
-        self.data_dir.join(id)
+        self.data_dir.join(format!("{id}.txt"))
     }
 
     fn get_pad(&self, id: &str) -> Option<String> {
@@ -142,27 +151,77 @@ fn handle(stream: TcpStream, state: Arc<AppState>) {
         let s = reader.get_mut();
 
         if req.method == "GET" && path == "/" {
-            let id = gen_id();
-            respond(s, 302, "Found", &format!("Location: /{id}\r\n"), b"");
-        } else if let Some(id) = path.strip_prefix("/api/pad/") {
-            let id = id.to_string();
+            respond(s, 200, "OK", "Content-Type: text/html\r\n", INDEX_HTML.as_bytes());
+        } else if req.method == "GET" && path == "/api/pads" {
+            let mut ids: Vec<String> = std::fs::read_dir(&state.data_dir)
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .filter_map(|e| {
+                            let name = e.file_name().to_string_lossy().to_string();
+                            name.strip_suffix(".txt").map(|id| id.to_string())
+                        })
+                        .filter(|id| is_valid_id(id))
+                        .collect()
+                })
+                .unwrap_or_default();
+            ids.sort();
+            let body = format!(
+                "[{}]",
+                ids.iter().map(|i| format!("\"{i}\"")).collect::<Vec<_>>().join(",")
+            );
+            respond(s, 200, "OK", "Content-Type: application/json\r\n", body.as_bytes());
+        } else if let Some(rest) = path.strip_prefix("/api/pad/") {
+            let (id, action) = match rest.rsplit_once('/') {
+                Some((left, act)) => (left.to_string(), Some(act.to_string())),
+                None => (rest.to_string(), None),
+            };
             if !is_valid_id(&id) {
                 respond(s, 404, "Not Found", "", b"");
-            } else if req.method == "GET" {
-                match state.get_pad(&id) {
-                    Some(text) => respond(s, 200, "OK", "Content-Type: text/plain\r\n", text.as_bytes()),
-                    None => respond(s, 404, "Not Found", "", b""),
-                }
-            } else if req.method == "PUT" {
-                match std::str::from_utf8(&req.body) {
-                    Ok(text) => {
-                        state.write_pad(&id, text);
+            } else if action.as_deref() == Some("rename") {
+                if req.method != "POST" {
+                    respond(s, 405, "Method Not Allowed", "", b"");
+                } else {
+                    let new_id = std::str::from_utf8(&req.body).unwrap_or("").trim();
+                    if !is_valid_id(new_id) {
+                        respond(s, 400, "Bad Request", "", b"invalid name");
+                    } else if new_id == id.as_str() {
                         respond(s, 200, "OK", "", b"");
+                    } else if !state.pad_path(&id).exists() {
+                        respond(s, 404, "Not Found", "", b"pad not found");
+                    } else if state.pad_path(new_id).exists() {
+                        respond(s, 409, "Conflict", "", b"name already exists");
+                    } else {
+                        match std::fs::rename(state.pad_path(&id), state.pad_path(new_id)) {
+                            Ok(_) => respond(s, 200, "OK", "", b""),
+                            Err(_) => respond(s, 500, "Internal Server Error", "", b"rename failed"),
+                        }
                     }
-                    Err(_) => respond(s, 400, "Bad Request", "", b""),
+                }
+            } else if action.is_none() {
+                if req.method == "GET" {
+                    match state.get_pad(&id) {
+                        Some(text) => respond(s, 200, "OK", "Content-Type: text/plain\r\n", text.as_bytes()),
+                        None => respond(s, 404, "Not Found", "", b""),
+                    }
+                } else if req.method == "PUT" {
+                    match std::str::from_utf8(&req.body) {
+                        Ok(text) => {
+                            state.write_pad(&id, text);
+                            respond(s, 200, "OK", "", b"");
+                        }
+                        Err(_) => respond(s, 400, "Bad Request", "", b""),
+                    }
+                } else if req.method == "DELETE" {
+                    match std::fs::remove_file(state.pad_path(&id)) {
+                        Ok(_) => respond(s, 200, "OK", "", b""),
+                        Err(_) => respond(s, 404, "Not Found", "", b""),
+                    }
+                } else {
+                    respond(s, 405, "Method Not Allowed", "", b"");
                 }
             } else {
-                respond(s, 405, "Method Not Allowed", "", b"");
+                respond(s, 404, "Not Found", "", b"");
             }
         } else if req.method == "GET" {
             let id = path.trim_start_matches('/');
