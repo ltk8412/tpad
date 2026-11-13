@@ -1,0 +1,21 @@
+# Local override — copy this file to `docker-compose.override.yml` and edit.
+# The override is auto-merged with docker-compose.yml when you run
+# `docker compose up`, so keep only the keys you want to change.
+#
+# Copy:  cp docker-compose.override.yml.example docker-compose.override.yml
+
+services:
+  tpad:
+    # Publish on a different host port.
+    # `!override` replaces the base list (otherwise ports are merged/unioned).
+    ports: !override
+      - "8080:3000"
+
+    # Keep pad files in a local folder you can browse and edit directly.
+    # (Pads are plain <name>.txt files, so you can open them in any editor.)
+    volumes: !override
+      - ./data:/data
+
+    environment:
+      PORT: "3000"
+      TPAD_DATA_DIR: "/data"

@@ -1,0 +1,17 @@
+# local compose override (personal settings, not for the repo)
+docker-compose.override.yml
+
+# local data dir from bind-mount overrides
+/data/
+
+# rust build artefacts
+target/
+*.o
+*.so
+
+# editor / os junk
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/

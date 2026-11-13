@@ -20,9 +20,135 @@
                 background: #0e0e0e;
             }
 
+            body {
+                display: flex;
+                flex-direction: column;
+            }
+
+            #tabs {
+                flex: 0 0 auto;
+                display: flex;
+                align-items: center;
+                gap: 4px;
+                padding: 6px 8px;
+                background: #161616;
+                border-bottom: 1px solid #242424;
+                overflow-x: auto;
+                overflow-y: hidden;
+                scrollbar-width: thin;
+            }
+
+            .tab {
+                flex: 0 0 auto;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                max-width: 220px;
+                padding: 4px 6px 4px 10px;
+                background: #1f1f1f;
+                border: 1px solid transparent;
+                border-radius: 6px;
+                color: #b0b0b0;
+                font-family: sans-serif;
+                font-size: 12px;
+                cursor: pointer;
+                user-select: none;
+                white-space: nowrap;
+            }
+
+            .tab:hover {
+                background: #262626;
+                color: #d0d0d0;
+            }
+
+            .tab.active {
+                background: #2a2a2a;
+                border-color: #3a3a3a;
+                color: #e0e0e0;
+            }
+
+            .tab-name {
+                overflow: hidden;
+                text-overflow: ellipsis;
+                max-width: 170px;
+            }
+
+            .tab input.tab-rename {
+                font: inherit;
+                color: #e0e0e0;
+                background: #0e0e0e;
+                border: 1px solid #666;
+                border-radius: 3px;
+                padding: 0 3px;
+                outline: none;
+                width: 120px;
+            }
+
+            .tab-close {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 16px;
+                height: 16px;
+                background: transparent;
+                border: none;
+                border-radius: 3px;
+                color: #666;
+                cursor: pointer;
+                font-size: 14px;
+                line-height: 1;
+            }
+
+            .tab-close:hover {
+                color: #e0e0e0;
+                background: #3a3a3a;
+            }
+
+            .tab-delete {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                width: 16px;
+                height: 16px;
+                background: transparent;
+                border: none;
+                border-radius: 3px;
+                color: #666;
+                cursor: pointer;
+                line-height: 1;
+            }
+
+            .tab-delete svg {
+                width: 11px;
+                height: 11px;
+            }
+
+            .tab-delete:hover {
+                color: #d64545;
+                background: #3a2222;
+            }
+
+            #new-tab {
+                flex: 0 0 auto;
+                background: transparent;
+                border: 1px dashed #444;
+                border-radius: 6px;
+                color: #888;
+                cursor: pointer;
+                font-size: 15px;
+                line-height: 1;
+                padding: 3px 10px;
+            }
+
+            #new-tab:hover {
+                color: #e0e0e0;
+                border-color: #777;
+            }
+
             textarea {
+                flex: 1 1 auto;
+                min-height: 0;
                 width: 100%;
-                height: 100%;
                 background: #0e0e0e;
                 color: #e0e0e0;
                 border: none;
@@ -39,6 +165,25 @@
 
             textarea::placeholder {
                 color: #444;
+            }
+
+            #save-txt {
+                position: fixed;
+                bottom: 12px;
+                left: 16px;
+                font-family: sans-serif;
+                font-size: 11px;
+                color: #777;
+                background: transparent;
+                border: 1px solid #333;
+                border-radius: 4px;
+                padding: 3px 8px;
+                cursor: pointer;
+            }
+
+            #save-txt:hover {
+                color: #e0e0e0;
+                border-color: #666;
             }
 
             #status {
@@ -63,79 +208,418 @@
         </style>
     </head>
     <body>
-        <textarea
-            id="editor"
-            placeholder="start typing..."
-            autofocus
-            spellcheck="false"
-        ></textarea>
+        <div id="tabs"></div>
+        <textarea id="editor" placeholder="start typing..." spellcheck="false"></textarea>
+        <button id="save-txt" title="download as .txt (Ctrl+Shift+S)">Save .txt</button>
         <div id="status"></div>
 
         <script>
-            const padId = window.location.pathname.slice(1);
             const editor = document.getElementById("editor");
-            const status = document.getElementById("status");
+            const statusEl = document.getElementById("status");
+            const tabsEl = document.getElementById("tabs");
+
+            // each tab: { id, loaded, draft, generation, statusText, statusCls }
+            let tabs = [];
+            let activeId = null;
             let saveTimer = null;
-            let generation = 0;
 
-            // Load existing content
-            fetch(`/api/pad/${padId}`)
-                .then((r) => {
-                    if (!r.ok) throw new Error("not found");
-                    return r.text();
-                })
-                .then((text) => {
-                    editor.value = text;
-                })
-                .catch(() => {
-                    // New pad, start empty
-                });
+            // ---------- helpers ----------
+            function timestampId() {
+                const d = new Date();
+                const p = (n) => String(n).padStart(2, "0");
+                return (
+                    d.getFullYear() +
+                    "-" +
+                    p(d.getMonth() + 1) +
+                    "-" +
+                    p(d.getDate()) +
+                    "_" +
+                    p(d.getHours()) +
+                    "-" +
+                    p(d.getMinutes()) +
+                    "-" +
+                    p(d.getSeconds())
+                );
+            }
 
-            function setStatus(text, cls) {
-                status.textContent = text;
-                status.className = cls;
+            function newNoteId() {
+                const base = timestampId();
+                if (!tabById(base)) return base;
+                let n = 2;
+                while (tabById(`${base}-${n}`)) n++;
+                return `${base}-${n}`;
+            }
+
+            function isValidId(id) {
+                return id.length > 0 && /^[A-Za-z0-9_-]+$/.test(id);
+            }
+
+            function urlId() {
+                return window.location.pathname.replace(/^\/+/, "");
+            }
+
+            function currentTab() {
+                return tabs.find((t) => t.id === activeId) || null;
+            }
+
+            function tabById(id) {
+                return tabs.find((t) => t.id === id) || null;
+            }
+
+            function updateUrl() {
+                const path = "/" + (activeId || "");
+                if (window.location.pathname !== path) {
+                    history.replaceState(null, "", path);
+                }
+            }
+
+            // ---------- tab factory ----------
+            function makeTab(id, loaded) {
+                return {
+                    id,
+                    loaded: !!loaded,
+                    draft: "",
+                    generation: 0,
+                    statusText: "",
+                    statusCls: "",
+                };
+            }
+
+            // ---------- loading / saving ----------
+            async function loadPad(t) {
+                try {
+                    const res = await fetch(`/api/pad/${encodeURIComponent(t.id)}`);
+                    if (res.ok) {
+                        t.draft = await res.text();
+                    } else if (res.status === 404) {
+                        t.draft = "";
+                    } else {
+                        return;
+                    }
+                    t.loaded = true;
+                    if (t.id === activeId) {
+                        editor.value = t.draft;
+                        updateStatus();
+                    }
+                } catch {}
+            }
+
+            function flushSave() {
+                if (saveTimer) {
+                    clearTimeout(saveTimer);
+                    saveTimer = null;
+                    save();
+                }
             }
 
             async function save() {
-                const thisGen = ++generation;
+                const t = currentTab();
+                if (!t) return;
+                t.generation = (t.generation || 0) + 1;
+                const gen = t.generation;
                 const text = editor.value;
-                setStatus("saving...", "saving");
-
+                setStatusFor(t, "saving...", "saving");
                 try {
-                    const res = await fetch(`/api/pad/${padId}`, {
+                    const res = await fetch(`/api/pad/${encodeURIComponent(t.id)}`, {
                         method: "PUT",
                         headers: { "Content-Type": "text/plain" },
                         body: text,
                     });
-
-                    if (thisGen !== generation) return; // stale save
-
+                    if (t.generation !== gen) return;
                     if (res.ok) {
-                        setStatus("saved", "saved");
+                        t.draft = text;
+                        setStatusFor(t, "saved", "saved");
                     } else {
-                        setStatus("error saving", "error");
+                        setStatusFor(t, "error saving", "error");
                     }
                 } catch {
-                    if (thisGen === generation) {
-                        setStatus("connection error", "error");
-                    }
+                    if (t.generation === gen) setStatusFor(t, "connection error", "error");
                 }
             }
 
+            function setStatusFor(t, text, cls) {
+                t.statusText = text;
+                t.statusCls = cls;
+                if (t.id === activeId) updateStatus();
+            }
+
+            function updateStatus() {
+                const t = currentTab();
+                if (!t) {
+                    statusEl.textContent = "";
+                    statusEl.className = "";
+                    return;
+                }
+                statusEl.textContent = t.statusText || "";
+                statusEl.className = t.statusCls || "";
+            }
+
+            function downloadTxt() {
+                const t = currentTab();
+                if (!t) return;
+                flushSave();
+                const blob = new Blob([editor.value], { type: "text/plain;charset=utf-8" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `${t.id}.txt`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            }
+
+            // ---------- tab actions ----------
+            function switchTo(id) {
+                if (activeId === id) return;
+                flushSave();
+                const cur = currentTab();
+                if (cur) cur.draft = editor.value;
+                activeId = id;
+                const t = currentTab();
+                if (t) {
+                    editor.value = t.draft || "";
+                    if (!t.loaded) loadPad(t);
+                } else {
+                    editor.value = "";
+                }
+                updateUrl();
+                renderTabs();
+                updateStatus();
+                editor.focus();
+            }
+
+            function createTab() {
+                flushSave();
+                const cur = currentTab();
+                if (cur) cur.draft = editor.value;
+                const id = newNoteId();
+                tabs.push(makeTab(id, true));
+                switchTo(id);
+            }
+
+            function removeTab(id) {
+                const idx = tabs.findIndex((t) => t.id === id);
+                if (idx === -1) return;
+                const wasActive = activeId === id;
+                tabs.splice(idx, 1);
+                if (tabs.length === 0) {
+                    tabs.push(makeTab(newNoteId(), true));
+                    activeId = null;
+                    switchTo(tabs[0].id);
+                    return;
+                }
+                if (wasActive) {
+                    activeId = null;
+                    const next = tabs[Math.min(idx, tabs.length - 1)];
+                    switchTo(next.id);
+                } else {
+                    renderTabs();
+                }
+            }
+
+            function closeTab(id, ev) {
+                if (ev) ev.stopPropagation();
+                if (activeId === id) flushSave();
+                removeTab(id);
+            }
+
+            async function deleteTab(id, ev) {
+                if (ev) ev.stopPropagation();
+                if (!confirm(`Delete "${id}"? This permanently removes the note.`)) return;
+                try {
+                    const res = await fetch(`/api/pad/${encodeURIComponent(id)}`, { method: "DELETE" });
+                    if (!res.ok && res.status !== 404) {
+                        alert(`delete failed (${res.status})`);
+                        return;
+                    }
+                } catch {
+                    alert("delete failed (network)");
+                    return;
+                }
+                removeTab(id);
+            }
+
+            // ---------- rename ----------
+            function startRename(t, tabEl, nameEl) {
+                const input = document.createElement("input");
+                input.className = "tab-rename";
+                input.value = t.id;
+                input.spellcheck = false;
+                input.placeholder = "name";
+                input.title = "Enter to confirm, Esc to cancel";
+                tabEl.replaceChild(input, nameEl);
+                input.focus();
+                input.select();
+
+                let done = false;
+                const finish = () => {
+                    if (done) return;
+                    done = true;
+                    renderTabs();
+                };
+
+                const commit = async () => {
+                    if (done) return;
+                    const newId = input.value.trim();
+                    if (!newId || newId === t.id) {
+                        finish();
+                        return;
+                    }
+                    if (!isValidId(newId)) {
+                        alert('Invalid name. Use only letters, numbers, "_" or "-".');
+                        finish();
+                        return;
+                    }
+                    done = true;
+                    input.disabled = true;
+                    try {
+                        const res = await fetch(`/api/pad/${encodeURIComponent(t.id)}/rename`, {
+                            method: "POST",
+                            headers: { "Content-Type": "text/plain" },
+                            body: newId,
+                        });
+                        if (res.ok) {
+                            const oldId = t.id;
+                            t.id = newId;
+                            t.draft = editor.value;
+                            if (activeId === oldId) {
+                                activeId = newId;
+                                updateUrl();
+                            }
+                            renderTabs();
+                            editor.focus();
+                        } else if (res.status === 409) {
+                            alert(`"${newId}" already exists.`);
+                            renderTabs();
+                        } else {
+                            alert("rename failed");
+                            renderTabs();
+                        }
+                    } catch {
+                        alert("rename failed (network)");
+                        renderTabs();
+                    }
+                };
+
+                input.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") {
+                        e.preventDefault();
+                        commit();
+                    } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        finish();
+                    }
+                });
+                input.addEventListener("blur", commit);
+            }
+
+            // ---------- rendering ----------
+            function renderTabs() {
+                tabsEl.innerHTML = "";
+                tabs.forEach((t) => {
+                    const el = document.createElement("div");
+                    el.className = "tab" + (t.id === activeId ? " active" : "");
+                    el.dataset.id = t.id;
+
+                    const name = document.createElement("span");
+                    name.className = "tab-name";
+                    name.textContent = t.id;
+                    name.title = "double-click to rename";
+                    name.addEventListener("dblclick", (e) => {
+                        e.stopPropagation();
+                        startRename(t, el, name);
+                    });
+
+                    const del = document.createElement("button");
+                    del.className = "tab-delete";
+                    del.title = "delete note";
+                    del.innerHTML =
+                        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
+                    del.addEventListener("click", (e) => deleteTab(t.id, e));
+
+                    const close = document.createElement("button");
+                    close.className = "tab-close";
+                    close.textContent = "\u00d7";
+                    close.title = "close tab";
+                    close.addEventListener("click", (e) => closeTab(t.id, e));
+
+                    el.appendChild(name);
+                    el.appendChild(del);
+                    el.appendChild(close);
+                    el.addEventListener("click", () => switchTo(t.id));
+                    el.addEventListener("auxclick", (e) => {
+                        if (e.button === 1) closeTab(t.id, e);
+                    });
+                    tabsEl.appendChild(el);
+                });
+
+                const add = document.createElement("button");
+                add.id = "new-tab";
+                add.textContent = "+";
+                add.title = "new pad";
+                add.addEventListener("click", createTab);
+                tabsEl.appendChild(add);
+            }
+
+            // ---------- editor events ----------
             editor.addEventListener("input", () => {
                 clearTimeout(saveTimer);
-                setStatus("", "");
+                const t = currentTab();
+                if (t) {
+                    t.statusText = "";
+                    t.statusCls = "";
+                }
+                updateStatus();
                 saveTimer = setTimeout(save, 300);
             });
 
-            // Save on Ctrl+S / Cmd+S
             editor.addEventListener("keydown", (e) => {
-                if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+                if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
                     e.preventDefault();
-                    clearTimeout(saveTimer);
-                    save();
+                    if (e.shiftKey) {
+                        downloadTxt();
+                    } else {
+                        clearTimeout(saveTimer);
+                        save();
+                    }
                 }
             });
+
+            document.getElementById("save-txt").addEventListener("click", downloadTxt);
+
+            window.addEventListener("beforeunload", flushSave);
+
+            // ---------- init ----------
+            async function init() {
+                let ids = [];
+                try {
+                    const res = await fetch("/api/pads");
+                    if (res.ok) ids = await res.json();
+                } catch {}
+                if (!Array.isArray(ids)) ids = [];
+
+                const uid = urlId();
+                if (ids.length === 0) {
+                    tabs = [makeTab(uid || newNoteId(), true)];
+                    activeId = tabs[0].id;
+                } else {
+                    tabs = ids.map((id) => makeTab(id, false));
+                    activeId = uid && tabById(uid) ? uid : tabs[0].id;
+                }
+
+                const t = currentTab();
+                if (t) {
+                    editor.value = t.draft || "";
+                    if (!t.loaded) loadPad(t);
+                }
+                updateUrl();
+                renderTabs();
+                updateStatus();
+                editor.focus();
+            }
+
+            init();
         </script>
     </body>
 </html>

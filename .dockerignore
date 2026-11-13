@@ -1,0 +1,27 @@
+# vcs
+.git
+.gitignore
+
+# build artefacts
+target/
+*.o
+*.so
+
+# the host install script isn't needed inside the image
+tpad
+
+# docs and metadata
+readme.md
+LICENSE
+
+# docker files aren't needed in the build context
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# editor / os junk
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
